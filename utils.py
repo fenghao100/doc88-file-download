@@ -11,7 +11,7 @@ cfg2 = None
 __all__ = [
     "ospath", "special_path", "choose", "logw", "r",
     "get_request", "write_file", "writes_file", "read_file",
-    "load_file", "download", "extractzip", "github_release",
+    "load_file", "download", "download_validated", "extractzip", "github_release",
     "get_cfg2",
 ]
 
@@ -108,7 +108,25 @@ def load_file(path):
 
 @retry(stop_max_attempt_number=3, wait_fixed=500)
 def download(url: str, filepath: str):
-    write_file(requests.get(url).content, filepath)
+    """下载文件到本地，失败自动重试 3 次。"""
+    resp = get_request(url, timeout=60)
+    resp.raise_for_status()
+    write_file(resp.content, filepath)
+
+
+def download_validated(url: str, filepath: str, min_size: int = 1024):
+    """下载文件并校验返回内容确实是文件（而非 HTML 错误页/登录页）。"""
+    resp = get_request(url, timeout=60)
+    resp.raise_for_status()
+    data = resp.content
+    ct = (resp.headers.get("Content-Type") or "").lower()
+    is_pdf = data[:5] == b"%PDF-"
+    if len(data) < min_size or ("text/html" in ct and not is_pdf):
+        raise ValueError(
+            "返回内容不是有效文件（可能需登录或链接已失效），"
+            "大小 %d 字节，类型 %s" % (len(data), ct or "未知")
+        )
+    write_file(data, filepath)
 
 
 def extractzip(file_path: str, topath: str):

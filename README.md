@@ -41,6 +41,17 @@ pip3 install retrying pypdf requests
     <br>Requires Java (recommended: version 17):
     <br>[Microsoft Build of OpenJDK 17 for Windows x64](https://aka.ms/download-jdk/microsoft-jdk-17.0.14-windows-x64.msi)
 
+- 也可以完全不安装 Java：程序启动时会自动定位可用 Java，若找不到会在主菜单提供「下载/修复便携版 JRE」（约 45MB，下载到程序目录 `jre/`，无需安装）。
+    <br>Java is optional if you use the built-in portable JRE downloader (menu item 8).
+
+- 程序自动查找 Java 的顺序（每个候选都会实际运行 `java -version` 验证，能跳过无效的 java）：
+    1. 程序目录下的便携 JRE（`jre/bin/java.exe`）
+    2. `JAVA_HOME/bin/java.exe`
+    3. 常见安装目录（Program Files 下的 Java / Eclipse Adoptium / Microsoft 等）
+    4. `PATH` 中的 `java`
+
+- 常见问题：如果转换时每个页面都报 "Can't convert this page!" 且输出的是 0 页空 PDF，几乎都是 PATH 中的 `java` 是无效启动器（例如被其它软件注入的 shim）或 `JAVA_HOME` 指向了不存在的目录。请用主菜单第 8 项下载便携版 JRE，或修复 Java 环境。
+
 ### SVG 转换 / SVG Converting
 
 - 若启用 swf2svg，需安装 cairosvg 以实现 SVG 到 PDF 的转换。  

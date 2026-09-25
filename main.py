@@ -36,6 +36,8 @@ import json
 import re
 import time
 import shutil
+import subprocess
+import java_env
 from compressor import *
 from concurrent.futures import ThreadPoolExecutor
 from pypdf import PdfWriter
@@ -83,6 +85,40 @@ class get_cfg:
 def append_pdf(pdf: PdfWriter, file: str):
     pdf.append(ospath(file))
     return pdf
+
+
+def run_ffdec(args, timeout=600):
+    """调用 ffdec.jar 执行转换命令。
+
+    使用 java_env 解析出的可用 java（绝对路径），以列表参数方式启动子进程，
+    不经过 cmd 解释器，避免中文路径/引号问题，并带超时与错误捕获。
+    返回 (returncode, stdout, stderr)；找不到 Java 时抛 RuntimeError。
+    """
+    java = java_env.find_java()
+    if not java:
+        raise RuntimeError("未找到可用的 Java 运行时，无法调用 ffdec 进行转换")
+    jar = java_env.ffdec_jar()
+    if not os.path.isfile(jar):
+        raise RuntimeError("未找到 ffdec/ffdec.jar，请先检查 ffdec 是否已安装")
+    cmd = [java, "-jar", jar] + [str(a) for a in args]
+    try:
+        p = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return p.returncode, p.stdout, p.stderr
+    except subprocess.TimeoutExpired:
+        return -1, "", "ffdec 执行超时（%d 秒）" % timeout
+    except Exception as err:
+        return -1, "", str(err)
+
+
+def _abs(path):
+    """转成绝对路径（保持 ospath 的长路径处理）。"""
+    return ospath(os.path.abspath(path))
 
 
 class init:
@@ -144,17 +180,15 @@ def main(encoded_str, more=False):
                 else:
                     doc_format = "zip"
                 file_path = "docs/" + cfg.p_name + "." + doc_format
-                download(
-                    get_request(
-                        "https://www.doc88.com/doc.php?act=download&pcode=" + cfg.p_code
-                    ).text,
+                download_validated(
+                    "https://www.doc88.com/doc.php?act=download&pcode=" + cfg.p_code,
                     file_path,
                 )
                 print("Saved file to " + file_path)
                 return True
             except Exception as err:
-                print("Downlaod error: " + str(err))
-                logw("Downlaod error: " + str(err))
+                print("下载失败: " + str(err))
+                logw("下载失败: " + str(err))
         else:
             print("Continuing...")
     if more:
@@ -279,34 +313,38 @@ class converter:
         self.pdf = PdfWriter()
         self.pdflist = set()
         try:
+            # 修正原代码 "flase" 拼写错误
             if cfg2.svgfontface:
-                log = os.popen(
-                    "java -jar ffdec/ffdec.jar -config textExportExportFontFace=true"
-                ).read()
+                run_ffdec(["-config", "textExportExportFontFace=true"], timeout=60)
             else:
-                log = os.popen(
-                    "java -jar ffdec/ffdec.jar -config textExportExportFontFace=flase"
-                ).read()
+                run_ffdec(["-config", "textExportExportFontFace=false"], timeout=60)
         except Exception as err:
             logw(str(err))
 
     def set_swf(self, i: int):
-        return os.popen(
-            "java -jar ffdec/ffdec.jar -header -set frameCount 1 "
-            + r(cfg2.swf_path + str(i) + ".swf")
-            + " "
-            + r(cfg2.swf_path + str(i) + ".swf")
-        ).read()
+        rc, out, err = run_ffdec(
+            [
+                "-header", "-set", "frameCount", "1",
+                _abs(cfg2.swf_path + str(i) + ".swf"),
+                _abs(cfg2.swf_path + str(i) + ".swf"),
+            ],
+            timeout=120,
+        )
+        return err or out or ("exit %d" % rc)
 
     def swf2svg(self, i: int):
         def execute(num: int):
+            # 注意：dirpath 必须保留末尾斜杠，后续拼接 "1.svg" 依赖它
             dirpath = cfg2.svg_path + str(num) + "/"
-            log = os.popen(
-                "java -jar ffdec/ffdec.jar -format frame:svg -select 1 -export frame "
-                + r(dirpath)
-                + " "
-                + r(cfg2.swf_path + str(num) + ".swf")
-            ).read()
+            rc, out, err = run_ffdec(
+                [
+                    "-format", "frame:svg", "-select", "1", "-export", "frame",
+                    _abs(dirpath),
+                    _abs(cfg2.swf_path + str(num) + ".swf"),
+                ]
+            )
+            if rc != 0:
+                raise FileNotFoundError(err or out or ("ffdec exit %d" % rc))
             shutil.move(
                 ospath(dirpath + "1.svg"), ospath(cfg2.svg_path + str(i) + "_.svg")
             )
@@ -325,13 +363,17 @@ class converter:
 
     def swf2pdf(self, i: int):
         def execute(num: int):
+            # 注意：dirpath 必须保留末尾斜杠，后续拼接 "frames.pdf" 依赖它
             dirpath = cfg2.pdf_path + str(num) + "/"
-            log = os.popen(
-                "java -jar ffdec/ffdec.jar -format frame:pdf -select 1 -export frame "
-                + r(dirpath)
-                + " "
-                + r(cfg2.swf_path + str(num) + ".swf")
-            ).read()
+            rc, out, err = run_ffdec(
+                [
+                    "-format", "frame:pdf", "-select", "1", "-export", "frame",
+                    _abs(dirpath),
+                    _abs(cfg2.swf_path + str(num) + ".swf"),
+                ]
+            )
+            if rc != 0:
+                raise FileNotFoundError(err or out or ("ffdec exit %d" % rc))
             shutil.move(
                 ospath(dirpath + "frames.pdf"), ospath(cfg2.pdf_path + str(i) + "_.pdf")
             )
@@ -404,15 +446,33 @@ def convert(cfg: gen_cfg):
 
 
 def clean(cfg2):
+    import time
     print("正在清理缓存...")
-    shutil.rmtree(ospath(cfg2.swf_path))
-    shutil.rmtree(ospath(cfg2.pdf_path))
-    shutil.rmtree(ospath(cfg2.svg_path))
+    for path in [cfg2.swf_path, cfg2.pdf_path, cfg2.svg_path]:
+        for attempt in range(3):
+            try:
+                if os.path.exists(ospath(path)):
+                    shutil.rmtree(ospath(path))
+                break
+            except PermissionError:
+                if attempt < 2:
+                    time.sleep(1)
+                    print(f"  重试清理 {path} ({attempt + 2}/3)...")
+                else:
+                    print(f"  警告: 清理 {path} 失败（文件被占用），已跳过。")
     for i in os.listdir(ospath(cfg2.dir_path)):
-        if i.endswith(".ebt"):
-            os.remove(ospath(cfg2.dir_path + i))
-        elif i == "progress.json":
-            os.remove(ospath(cfg2.dir_path + i))
+        for attempt in range(3):
+            try:
+                if i.endswith(".ebt"):
+                    os.remove(ospath(cfg2.dir_path + i))
+                elif i == "progress.json":
+                    os.remove(ospath(cfg2.dir_path + i))
+                break
+            except PermissionError:
+                if attempt < 2:
+                    time.sleep(1)
+                else:
+                    print(f"  警告: 清理 {i} 失败，已跳过。")
 
 
 class mode:
@@ -477,6 +537,7 @@ def print_menu():
     print("  5. 修改配置")
     print("  6. 检查更新")
     print("  7. 清理文档缓存")
+    print("  8. 下载/修复便携版 JRE")
     print("  0. 退出")
     print()
 
@@ -583,12 +644,13 @@ def interactive_menu():
         "5": lambda: (modify_config(), None)[1],
         "6": lambda: (update.check_update(), None)[1],
         "7": lambda: (clean_cache(), None)[1],
+        "8": lambda: (update.download_jre(), None)[1],
     }
     while True:
         clear_screen()
         print_banner()
         print_menu()
-        choice = input("\033[36m  请选择 [0-7]: \033[0m").strip()
+        choice = input("\033[36m  请选择 [0-8]: \033[0m").strip()
         if choice == "0":
             print("\033[33m  再见！\033[0m")
             break
@@ -611,11 +673,16 @@ def interactive_menu():
 
 if __name__ == "__main__":
     print("正在初始化...", flush=True)
-    update=Update(cfg2)
+    update = Update(cfg2)
     java_ok = update.check_java()
     if not java_ok:
-        print("\033[33m警告: Java 未安装或配置异常，SWF 转换功能将不可用。\033[0m", flush=True)
-        print("请安装 Java 后再进行文档转换。\n", flush=True)
+        if not os.path.isfile(java_env.portable_java()):
+            if choose("未找到可用的 Java 运行时，是否现在下载便携版 JRE 到程序目录（约 45MB）？ (Y/n): "):
+                if update.download_jre():
+                    java_ok = True
+        if not java_ok:
+            print("\033[33m警告: Java 不可用，SWF 转换功能将无法使用。\033[0m", flush=True)
+            print("可在主菜单选择 8（下载/修复便携版 JRE），或自行安装 Java 后重试。\n", flush=True)
     update.upgrade()
     print("初始化完成！\n", flush=True)
     a = sys.argv

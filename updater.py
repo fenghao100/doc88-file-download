@@ -1,5 +1,6 @@
 from utils import *
 from config import Config
+import java_env
 import shutil
 import os
 import json
@@ -50,38 +51,59 @@ class Update:
             return False
 
     def check_java(self):
-        text="Java 不正常，请尝试重新安装 Java。"
-        text2="Java 未找到! 请安装 Java 并将其添加到 PATH 或 JAVA_HOME 中。"
-        try:
-            output = subprocess.run(['java', '-version'], capture_output=True, text=True)
-            if output.returncode != 0:
-                print(text)
-                return False
+        """检查是否存在可用 Java。
+
+        不再只是检测 PATH 里的 java 是否存在，而是通过 java_env 找到一个
+        真正能启动成功的 java（会实际执行 java -version 验证），
+        能自动跳过 PATH 中被其它软件注入的无效 java 启动器。
+        """
+        if java_env.find_java():
             return True
-        except FileNotFoundError:
-            platform = os.name
-            if platform == "nt":
-                java_home = os.environ.get("JAVA_HOME", "")
-                if java_home:
-                    java_path = os.path.join(java_home, "bin", "java.exe")
-                    if os.path.isfile(java_path):
-                        os.environ["PATH"] = os.pathsep.join([os.path.join(java_home, "bin"), os.environ.get("PATH", "")])
-                        try:
-                            if subprocess.run(['java', '-version'],capture_output=True).returncode == 0:
-                                print("警告: Java 未配置到 PATH 中，但在 JAVA_HOME 中找到了，建议将其添加到 PATH 中。")
-                                return True
-                            else:
-                                print(text)
-                                return False
-                        except FileNotFoundError:
-                            print(text2)
-                            return False
-                    else:
-                        print(text2)
-                        return False
-            else:
-                print(text2)
-                return False
+        print("Java 未找到或不可用（PATH 中的 java 可能无效，请检查 JAVA_HOME）。")
+        return False
+
+    def download_jre(self):
+        """下载便携版 JRE 到程序目录 jre/ 文件夹，无需安装即可使用。"""
+        base = os.path.dirname(os.path.abspath(__file__))
+        jre_dir = os.path.join(base, "jre")
+        zip_path = os.path.join(jre_dir, "jre.zip")
+        os.makedirs(jre_dir, exist_ok=True)
+        print("开始下载便携版 JRE（约 45MB，需要一些时间）...")
+        print("下载地址: " + java_env.JRE_DOWNLOAD_URL)
+        try:
+            download(java_env.JRE_DOWNLOAD_URL, zip_path)
+        except Exception as e:
+            print(f"JRE 下载失败: {e}")
+            print("请检查网络后重试，或在菜单重新执行本功能。")
+            return False
+        if not zipfile.is_zipfile(zip_path):
+            print("下载的文件不是有效的压缩包（可能被网络拦截），下载失败。")
+            return False
+        try:
+            extractzip(zip_path, jre_dir)
+            os.remove(zip_path)
+        except Exception as e:
+            print(f"JRE 解压失败: {e}")
+            return False
+        # 压缩包内通常有一层目录（如 jdk-17.x.x+xx-jre/），将其内容提升到 jre/
+        for name in os.listdir(jre_dir):
+            sub = os.path.join(jre_dir, name)
+            if os.path.isdir(sub) and os.path.isfile(os.path.join(sub, "bin", "java.exe")):
+                tmp = os.path.join(base, ".jre_tmp")
+                if os.path.exists(tmp):
+                    shutil.rmtree(tmp)
+                shutil.move(sub, tmp)
+                for f in os.listdir(tmp):
+                    shutil.move(os.path.join(tmp, f), jre_dir)
+                shutil.rmtree(tmp)
+                break
+        java_path = java_env.portable_java()
+        if not os.path.isfile(java_path):
+            print("JRE 安装失败：未找到 jre/bin/java.exe")
+            return False
+        print("JRE 安装完成。")
+        return True
+
     def ffdec_update(self):
         if os.path.isfile("ffdec/ffdec.jar"):
             if choose("是否删除旧版本ffdec，否则创建备份？ (Y: 删除, N: 备份): "):

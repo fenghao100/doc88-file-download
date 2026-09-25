@@ -9,6 +9,8 @@ dist/
 __pycache__/
 docs/
 ffdec*
+jre/
+jre.zip
 test/
 fonts/
 .vscode/
